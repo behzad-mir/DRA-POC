@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-nri-interface
+  namespace: default
+spec:
+  containers:
+  - name: test-container
+    image: nicolaka/netshoot
+    command: ["/bin/bash"]
+    args: ["-c", "echo 'Testing NRI network interface injection...'; echo 'Initial interfaces:'; ip link show; echo 'Environment variables:'; env | grep NRI_ || echo 'No NRI_ env vars found'; echo 'Sleeping for 5 minutes to allow testing...'; sleep 80000"]
+    resources:
+      claims:
+      - name: nic
+    securityContext:
+      capabilities:
+        add: ["NET_ADMIN", "SYS_ADMIN"]
+  resourceClaims:
+  - name: nic
+    resourceClaimTemplateName: single-nic
+  restartPolicy: Never
+  # Let scheduler choose node based on DRA resource availability
+  # nodeName: myvm000000  # Commented out to allow DRA scheduling
+  tolerations:
+  - operator: Exists

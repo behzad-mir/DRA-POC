@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kubelet-dra-monitor
+  namespace: kube-system
+  labels:
+    app: kubelet-dra-monitor
+spec:
+  selector:
+    matchLabels:
+      app: kubelet-dra-monitor
+  template:
+    metadata:
+      labels:
+        app: kubelet-dra-monitor
+    spec:
+      hostNetwork: true
+      hostPID: true
+      tolerations:
+      - operator: Exists
+      serviceAccountName: kubelet-dra-monitor
+      containers:
+      - name: monitor
+        image: alpine:3.18
+        securityContext:
+          privileged: true
+        command:
+        - /bin/sh
+        - -c
+        - |
+          apk add --no-cache curl jq bash
+          
+          while true; do
+            echo "$(date): Checking for stuck DRA pods..."
+            
+            # Check for pods stuck in ContainerCreating with DRA resource claims
+            stuck_pods=$(timeout 30 kubectl get pods -A -o json 2>/dev/null | jq -r '
+              .items[] | 
+              select(.status.phase == "Pending") |
+              select(.status.conditions[]? | select(.type == "PodScheduled" and .status == "True")) |
+              select(.spec.resourceClaims != null) |
+              select((.status.containerStatuses // [])[] | select(.state.waiting.reason == "ContainerCreating")) |
+              select(now - (.metadata.creationTimestamp | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) > 300) |
+              "\(.metadata.namespace)/\(.metadata.name)"
+            ' 2>/dev/null || echo "")
+            
+            if [ -n "$stuck_pods" ]; then
+              echo "$(date): Found stuck DRA pods: $stuck_pods"
+              echo "$(date): Triggering kubelet restart to resolve stuck DRA state..."
+              
+              # Restart kubelet
+              if nsenter --target 1 --mount --uts --ipc --net --pid -- systemctl restart kubelet; then
+                echo "$(date): Kubelet restart triggered successfully"
+              else
+                echo "$(date): Failed to restart kubelet"
+              fi
+            else
+              echo "$(date): No stuck DRA pods detected"
+            fi
+            
+            sleep 60
+          done
+        volumeMounts:
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        - name: kubelet-config
+          mountPath: /etc/kubernetes
+          readOnly: true
+        env:
+        - name: KUBECONFIG
+          value: /etc/kubernetes/admin.conf
+      volumes:
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: kubelet-config
+        hostPath:
+          path: /etc/kubernetes
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubelet-dra-monitor
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubelet-dra-monitor
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["resource.k8s.io"]
+  resources: ["resourceclaims", "resourceslices"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubelet-dra-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubelet-dra-monitor
+subjects:
+- kind: ServiceAccount
+  name: kubelet-dra-monitor
+  namespace: kube-system

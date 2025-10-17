@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  annotations:
+    deprecated.daemonset.template.generation: "5"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"DaemonSet","metadata":{"annotations":{},"name":"drasecondarynic","namespace":"kube-system"},"spec":{"selector":{"matchLabels":{"app":"drasecondarynic"}},"template":{"metadata":{"labels":{"app":"drasecondarynic"}},"spec":{"containers":[{"env":[{"name":"NODE_NAME","valueFrom":{"fieldRef":{"fieldPath":"spec.nodeName"}}},{"name":"DRA_GRPC_PORT","value":"50051"}],"image":"acnpublic.azurecr.io/dra-driver-grpc:latest","imagePullPolicy":"Always","name":"driver","ports":[{"containerPort":50051,"name":"grpc","protocol":"TCP"}],"securityContext":{"privileged":true,"runAsGroup":0,"runAsUser":0},"volumeMounts":[{"mountPath":"/var/run/cdi","name":"cdi"},{"mountPath":"/var/lib/kubelet/plugins","mountPropagation":"Bidirectional","name":"kubelet-plugin-dir"},{"mountPath":"/var/lib/kubelet/plugins_registry","mountPropagation":"Bidirectional","name":"kubelet-reg-dir"},{"mountPath":"/sys/class/net","name":"sys","readOnly":true},{"mountPath":"/var/run/netns","mountPropagation":"Bidirectional","name":"netns"}]}],"hostNetwork":true,"serviceAccountName":"drasecondarynic","tolerations":[{"effect":"NoSchedule","key":"node-role.kubernetes.io/control-plane","operator":"Exists"}],"volumes":[{"hostPath":{"path":"/var/run/cdi","type":"DirectoryOrCreate"},"name":"cdi"},{"hostPath":{"path":"/var/lib/kubelet/plugins","type":"DirectoryOrCreate"},"name":"kubelet-plugin-dir"},{"hostPath":{"path":"/var/lib/kubelet/plugins_registry","type":"DirectoryOrCreate"},"name":"kubelet-reg-dir"},{"hostPath":{"path":"/sys/class/net","type":"Directory"},"name":"sys"},{"hostPath":{"path":"/var/run/netns","type":"DirectoryOrCreate"},"name":"netns"}]}}}}
+  creationTimestamp: "2025-10-16T17:50:13Z"
+  generation: 5
+  name: drasecondarynic
+  namespace: kube-system
+  resourceVersion: "5984870"
+  uid: b7fedfdd-1221-4020-b9aa-8bec8ebc9585
+spec:
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: drasecondarynic
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/restartedAt: "2025-10-16T13:46:51-07:00"
+      creationTimestamp: null
+      labels:
+        app: drasecondarynic
+    spec:
+      containers:
+      - env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.nodeName
+        - name: DRA_GRPC_PORT
+          value: "50051"
+        image: acnpublic.azurecr.io/dra-driver-grpc:latest
+        imagePullPolicy: Always
+        name: driver
+        ports:
+        - containerPort: 50051
+          name: grpc
+          protocol: TCP
+        resources: {}
+        securityContext:
+          privileged: true
+          runAsGroup: 0
+          runAsUser: 0
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /var/run/cdi
+          name: cdi
+        - mountPath: /var/lib/kubelet/plugins
+          mountPropagation: Bidirectional
+          name: kubelet-plugin-dir
+        - mountPath: /var/lib/kubelet/plugins_registry
+          mountPropagation: Bidirectional
+          name: kubelet-reg-dir
+        - mountPath: /sys/class/net
+          name: sys
+          readOnly: true
+        - mountPath: /var/run/netns
+          mountPropagation: Bidirectional
+          name: netns
+      dnsPolicy: ClusterFirst
+      hostNetwork: true
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: drasecondarynic
+      serviceAccountName: drasecondarynic
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/control-plane
+        operator: Exists
+      volumes:
+      - hostPath:
+          path: /var/run/cdi
+          type: DirectoryOrCreate
+        name: cdi
+      - hostPath:
+          path: /var/lib/kubelet/plugins
+          type: DirectoryOrCreate
+        name: kubelet-plugin-dir
+      - hostPath:
+          path: /var/lib/kubelet/plugins_registry
+          type: DirectoryOrCreate
+        name: kubelet-reg-dir
+      - hostPath:
+          path: /sys/class/net
+          type: Directory
+        name: sys
+      - hostPath:
+          path: /var/run/netns
+          type: DirectoryOrCreate
+        name: netns
+  updateStrategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    type: RollingUpdate
+status:
+  currentNumberScheduled: 5
+  desiredNumberScheduled: 5
+  numberAvailable: 5
+  numberMisscheduled: 0
+  numberReady: 5
+  observedGeneration: 5
+  updatedNumberScheduled: 5

@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: privileged-debug-myvm3000004
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: myvm3000004
+  hostNetwork: true
+  hostPID: true
+  containers:
+  - name: debug
+    image: nicolaka/netshoot
+    command: ["/bin/bash"]
+    args: ["-c", "while true; do sleep 30; done"]
+    securityContext:
+      privileged: true
+    volumeMounts:
+    - name: host-root
+      mountPath: /host
+      readOnly: true
+  volumes:
+  - name: host-root
+    hostPath:
+      path: /
+      type: Directory
+  restartPolicy: Never

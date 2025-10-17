@@ -1,0 +1,40 @@
+# Multi-stage build for NRI plugin
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /src
+
+# Copy Go modules
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code (use the debug version with better logging)
+COPY nri-plugin-debug.go ./main.go
+
+# Build the NRI plugin
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -a -installsuffix cgo \
+    -ldflags '-extldflags "-static"' \
+    -o nri-nic-hook ./main.go
+
+# Runtime stage
+FROM alpine:3.18
+
+# Install required tools for network operations
+RUN apk add --no-cache \
+    iproute2 \
+    util-linux \
+    ca-certificates
+
+# Add non-root user (required by some security policies)
+RUN adduser -D -s /bin/sh -u 65532 nonroot
+
+# Copy the NRI plugin binary
+COPY --from=builder /src/nri-nic-hook /usr/local/bin/nri-nic-hook
+
+# Make it executable
+RUN chmod +x /usr/local/bin/nri-nic-hook
+
+# Run as root (required for network operations)
+USER 0
+
+ENTRYPOINT ["/usr/local/bin/nri-nic-hook"]

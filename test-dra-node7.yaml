@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-dra-long-running-node7
+  labels:
+    test: dra-longevity
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: myvm3000007
+  containers:
+  - name: test-container
+    image: nicolaka/netshoot
+    command: ["/bin/bash"]
+    args: 
+      - "-c"
+      - |
+        echo "Starting DRA longevity test on myvm3000007..."
+        echo "Pod start time: $(date)"
+        echo "Initial network interfaces:"
+        ip link show
+        echo ""
+        echo "Environment variables:"
+        env | grep NRI_ || echo "No NRI environment variables found"
+        echo ""
+        echo "Running for extended period to test DRA cleanup after kubelet feature gate fix..."
+        echo "This pod will run for a long time to simulate the previous stuck termination scenario"
+        
+        # Run indefinitely but with periodic health checks
+        while true; do
+          echo "$(date): Pod is healthy and running on myvm3000007"
+          sleep 300  # Log every 5 minutes
+        done
+    resources:
+      requests:
+        example.com/nic: 1
+      limits:
+        example.com/nic: 1
+  restartPolicy: Never

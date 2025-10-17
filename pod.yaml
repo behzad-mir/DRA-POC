@@ -1,0 +1,22 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nic-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: nic-test }
+  template:
+    metadata: { labels: { app: nic-test } }
+    spec:
+      # Per-pod, auto-created claims from the template
+      resourceClaims:
+      - name: nic
+        resourceClaimTemplateName: single-nic
+      containers:
+      - name: app
+        image: mcr.microsoft.com/oss/nginx/nginx:latest
+        resources:
+          claims:
+          - name: nic

@@ -1,0 +1,60 @@
+
+syntax = "proto3";
+
+package dra;
+
+option go_package = "draProtos/";
+
+service Node {
+  rpc PrepareResources(PrepareResourcesRequest) returns (PrepareResourcesResponse);
+  rpc UnprepareResources(UnprepareResourcesRequest) returns (UnprepareResourcesResponse);
+  rpc ConfigureNetwork(ConfigureNetworkRequest) returns (ConfigureNetworkResponse);
+}
+
+message PrepareResourcesRequest {
+  map<string, string> claims = 1; // claimUID -> opaque JSON
+}
+
+message PrepareResourcesResponse {
+  map<string, PreparedResource> preparedResources = 1;
+}
+
+message PreparedResource {
+  repeated string cdiDevices = 1;
+}
+
+message UnprepareResourcesRequest {
+  repeated string claimUIDs = 1;
+}
+
+message UnprepareResourcesResponse {}
+
+message ConfigureNetworkRequest {
+  string podNamespace = 1;
+  string podName = 2;
+  string containerName = 3;
+  int32 containerPid = 4;
+  string podUID = 5;
+  repeated ResourceClaim resourceClaims = 6;
+  string networkNamespacePath = 7;
+  string nicName = 8;
+  string ipAddress = 9;
+}
+
+message ResourceClaim {
+  string name = 1;
+  string uid = 2;
+}
+
+message ConfigureNetworkResponse {
+  bool success = 1;
+  string errorMessage = 2;
+  repeated ConfiguredInterface interfaces = 3;
+  string message = 4;
+}
+
+message ConfiguredInterface {
+  string nicName = 1;
+  string ipAddress = 2;
+  string gateway = 3;
+}

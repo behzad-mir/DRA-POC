@@ -1,0 +1,135 @@
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: drasecondarynic
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: drasecondarynic
+  template:
+    metadata:
+      labels:
+        app: drasecondarynic
+    spec:
+      serviceAccountName: drasecondarynic
+      hostNetwork: true  # Required for kubelet restart functionality
+      hostPID: true      # Required for kubelet restart functionality
+      tolerations:
+        - key: "node-role.kubernetes.io/control-plane"
+          operator: "Exists"
+          effect: "NoSchedule"
+      containers:
+        - name: driver
+          image: acnpublic.azurecr.io/dra-driver-grpc:latest
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: DRA_GRPC_PORT
+              value: "50051"
+          ports:
+          - name: grpc
+            containerPort: 50051
+            protocol: TCP
+          volumeMounts:
+            - name: cdi
+              mountPath: /var/run/cdi
+            - name: kubelet-plugin-dir
+              mountPath: /var/lib/kubelet/plugins
+              mountPropagation: Bidirectional
+            - name: kubelet-reg-dir
+              mountPath: /var/lib/kubelet/plugins_registry
+              mountPropagation: Bidirectional
+            - name: sys
+              mountPath: /sys/class/net
+              readOnly: true
+            - name: netns
+              mountPath: /var/run/netns
+              mountPropagation: Bidirectional
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: host-usr-bin
+              mountPath: /host/usr/bin
+              readOnly: true
+      volumes:
+        - name: cdi
+          hostPath:
+            path: /var/run/cdi
+            type: DirectoryOrCreate
+        - name: kubelet-plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins
+            type: DirectoryOrCreate
+        - name: kubelet-reg-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: DirectoryOrCreate
+        - name: sys
+          hostPath:
+            path: /sys/class/net
+            type: Directory
+        - name: netns
+          hostPath:
+            path: /var/run/netns
+            type: DirectoryOrCreate
+        - name: proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: host-usr-bin
+          hostPath:
+            path: /usr/bin
+            type: Directory
+
+      
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: drasecondarynic
+  namespace: kube-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: drasecondarynic
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["resource.k8s.io"]
+  resources: ["resourceslices"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["resource.k8s.io"] 
+  resources: ["resourceclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: drasecondarynic
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: drasecondarynic
+subjects:
+- kind: ServiceAccount
+  name: drasecondarynic
+  namespace: kube-system

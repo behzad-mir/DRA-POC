@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nri-grpc-plugin-installer
+  namespace: kube-system
+  labels:
+    app: nri-grpc-plugin-installer
+spec:
+  selector:
+    matchLabels:
+      app: nri-grpc-plugin-installer
+  template:
+    metadata:
+      labels:
+        app: nri-grpc-plugin-installer
+    spec:
+      hostNetwork: true
+      hostPID: true
+      serviceAccountName: nri-grpc-plugin
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: nri-grpc-plugin-installer
+          image: acnpublic.azurecr.io/nri-grpc-client:latest
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          env:
+            - name: DRA_GRPC_ADDRESS
+              value: "localhost:50051"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          command: ["/bin/sh"]
+          args: 
+            - "-c"
+            - |
+              echo "Installing NRI gRPC Plugin..."
+              mkdir -p /opt/nri/plugins
+              cp /usr/local/bin/nri-plugin-grpc-client /opt/nri/plugins/10-nri-grpc-plugin
+              chmod +x /opt/nri/plugins/10-nri-grpc-plugin
+              ls -la /opt/nri/plugins/
+              echo "NRI gRPC plugin installed successfully at /opt/nri/plugins/10-nri-grpc-plugin"
+              
+              echo "Restarting containerd to reload NRI plugins..."
+              chroot /host systemctl restart containerd
+              sleep 5
+              
+              echo "Verifying containerd status..."
+              chroot /host systemctl is-active containerd
+              echo "NRI gRPC plugin installation and containerd restart completed!"
+              echo "Plugin will connect to DRA driver gRPC server on $DRA_GRPC_ADDRESS"
+          volumeMounts:
+            - name: nri-plugins
+              mountPath: /opt/nri/plugins
+            - name: host-root
+              mountPath: /host
+      containers:
+        - name: nri-grpc-monitor
+          image: busybox:1.35
+          command: ["/bin/sh"]
+          args:
+            - "-c"
+            - |
+              echo "NRI gRPC plugin monitor started on node $(hostname)"
+              while true; do
+                if [ -f /opt/nri/plugins/10-nri-grpc-plugin ]; then
+                  echo "$(date): NRI gRPC plugin exists and is executable: $(ls -la /opt/nri/plugins/10-nri-grpc-plugin)"
+                else
+                  echo "$(date): WARNING: NRI gRPC plugin not found at /opt/nri/plugins/10-nri-grpc-plugin"
+                fi
+                sleep 300  # Check every 5 minutes
+              done
+          volumeMounts:
+            - name: nri-plugins
+              mountPath: /opt/nri/plugins
+              readOnly: true
+      volumes:
+        - name: nri-plugins
+          hostPath:
+            path: /opt/nri/plugins
+            type: DirectoryOrCreate
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nri-grpc-plugin
+  namespace: kube-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nri-grpc-plugin
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nri-grpc-plugin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nri-grpc-plugin
+subjects:
+  - kind: ServiceAccount
+    name: nri-grpc-plugin
+    namespace: kube-system

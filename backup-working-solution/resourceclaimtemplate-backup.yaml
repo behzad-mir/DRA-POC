@@ -1,0 +1,22 @@
+apiVersion: resource.k8s.io/v1beta2
+kind: ResourceClaimTemplate
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"resource.k8s.io/v1beta2","kind":"ResourceClaimTemplate","metadata":{"annotations":{},"name":"single-nic","namespace":"default"},"spec":{"spec":{"devices":{"requests":[{"exactly":{"allocationMode":"ExactCount","count":1,"deviceClassName":"dra-secondarynic"},"name":"nic"}]}}}}
+  creationTimestamp: "2025-10-09T03:20:40Z"
+  name: single-nic
+  namespace: default
+  resourceVersion: "4741491"
+  uid: ebb597a6-41b5-4deb-beb8-dfc138051b47
+spec:
+  metadata:
+    creationTimestamp: null
+  spec:
+    devices:
+      requests:
+      - exactly:
+          allocationMode: ExactCount
+          count: 1
+          deviceClassName: dra-secondarynic
+        name: nic

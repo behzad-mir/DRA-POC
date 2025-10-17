@@ -1,0 +1,31 @@
+
+# DeviceClass
+apiVersion: resource.k8s.io/v1beta2
+kind: DeviceClass
+metadata:
+  name: dra-secondarynic
+spec:
+  selectors:
+    - cel:
+        expression: "true"  # Always match for PoC
+---
+# ResourceClaimTemplate
+apiVersion: resource.k8s.io/v1beta2
+kind: ResourceClaimTemplate
+metadata:
+  name: extra-nic-template
+spec: {}  # Empty spec is valid for PoC
+---
+# Pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-nic-pod
+spec:
+  resourceClaims:
+    - name: extra-nic
+      resourceClaimTemplateName: extra-nic-template
+  containers:
+    - name: app
+      image: busybox
+      command: ["sleep", "3600"]

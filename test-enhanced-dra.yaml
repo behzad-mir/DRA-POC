@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-enhanced-dra-driver
+  namespace: default
+spec:
+  containers:
+  - name: test-container
+    image: nginx:1.21
+    resources:
+      claims:
+      - name: nic
+        request: single-nic
+  resourceClaims:
+  - name: nic
+    resourceClaimTemplateName: single-nic
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: myvm3000004
+---
+apiVersion: resource.k8s.io/v1alpha3
+kind: ResourceClaimTemplate
+metadata:
+  name: single-nic
+  namespace: default
+spec:
+  metadata: {}
+  spec:
+    devices:
+      requests:
+      - name: "nic"
+        deviceClassName: "single-nic"

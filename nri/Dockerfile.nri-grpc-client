@@ -1,0 +1,26 @@
+FROM alpine:3.19
+
+# Install required packages for network operations
+RUN apk add --no-cache \
+    iproute2 \
+    util-linux \
+    ca-certificates
+
+# Copy the NRI plugin gRPC client binary
+COPY nri-plugin-grpc-client /usr/local/bin/nri-plugin-grpc-client
+
+# Make sure it's executable
+RUN chmod +x /usr/local/bin/nri-plugin-grpc-client
+
+# Set environment variables
+ENV DRA_GRPC_ADDRESS="localhost:50051"
+
+# Create log directory
+RUN mkdir -p /tmp
+
+# Run as non-root user for security
+RUN adduser -D -s /bin/sh nri-user
+USER nri-user
+
+# Default command
+CMD ["/usr/local/bin/nri-plugin-grpc-client"]
