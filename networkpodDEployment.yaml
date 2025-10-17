@@ -1,0 +1,27 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-network-tools
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-network-tools
+  template:
+    metadata:
+      labels:
+        app: nginx-network-tools
+    spec:
+      containers:
+      - name: nginx-network-tools
+        image: nginx:latest
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            apt-get update && \
+            apt-get install -y iproute2 iputils-ping net-tools && \
+            nginx -g 'daemon off;'
+        ports:
+        - containerPort: 80
+

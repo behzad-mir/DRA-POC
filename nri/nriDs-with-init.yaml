@@ -1,0 +1,251 @@
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nri-grpc-plugin-installer
+  namespace: kube-system
+  labels:
+    app: nri-grpc-plugin-installer
+spec:
+  selector:
+    matchLabels:
+      app: nri-grpc-plugin-installer
+  template:
+    metadata:
+      labels:
+        app: nri-grpc-plugin-installer
+    spec:
+      hostNetwork: true
+      hostPID: true
+      serviceAccountName: nri-grpc-plugin
+      tolerations:
+        - operator: Exists
+
+      initContainers:
+        # 1) Enable NRI in containerd if not already (idempotent)
+        - name: enable-nri-in-containerd
+          image: alpine:3.20
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              set -e
+              CONF="/host/etc/containerd/config.toml"
+              CTRD_BIN="/usr/bin/containerd"
+
+              echo "[nri] ensuring host paths"
+              mkdir -p /host/etc/containerd
+              mkdir -p /host/etc/nri/conf.d /host/opt/nri/plugins /host/var/run/nri
+
+              if [ ! -f "$CONF" ]; then
+                echo "[nri] $CONF missing; attempting to generate default"
+                if chroot /host "$CTRD_BIN" config default >/host/tmp/config.toml.new 2>/dev/null; then
+                  mv /host/tmp/config.toml.new "$CONF"
+                else
+                  # minimal valid v2 config; CRI plugin gets added by kube images, we only need v2 header here
+                  echo 'version = 2' > "$CONF"
+                fi
+              fi
+
+              echo "[nri] backing up original"
+              cp -f "$CONF" "${CONF}.bak"
+
+              echo "[nri] rewriting NRI block (remove old, append canonical)"
+              awk '
+                BEGIN{skip=0}
+                {
+                  if ($0 ~ /^\[plugins\."io\.containerd\.nri\.v1\.nri"\]/) { skip=1; next }
+                  if (skip && $0 ~ /^\[/) { skip=0 }
+                  if (!skip) { print $0 }
+                }
+                END{
+                  print "[plugins.\"io.containerd.nri.v1.nri\"]"
+                  print "  disable = false"
+                  print "  disable_connections = false"
+                  print "  plugin_config_path = \"/etc/nri/conf.d\""
+                  print "  plugin_path = \"/opt/nri/plugins\""
+                  print "  plugin_registration_timeout = \"5s\""
+                  print "  plugin_request_timeout = \"2s\""
+                  print "  socket_path = \"/var/run/nri/nri.sock\""
+                }
+              ' "$CONF" > "${CONF}.new"
+
+              changed=1
+              if diff -q "${CONF}.bak" "${CONF}.new" >/dev/null 2>&1; then
+                changed=0
+              fi
+              mv -f "${CONF}.new" "$CONF"
+
+              if [ $changed -eq 1 ]; then
+                echo "[nri] config changed; restarting containerd"
+                chroot /host systemctl restart containerd || (sleep 2; chroot /host systemctl restart containerd)
+                chroot /host systemctl is-active --quiet containerd && echo "[nri] containerd is active"
+              else
+                echo "[nri] no change; skipping restart"
+              fi
+
+        # 2) Install your NRI plugin binary (no restart here)
+        - name: install-nri-grpc-plugin
+          image: acnpublic.azurecr.io/nri-grpc-client:latest
+          imagePullPolicy: Always
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          env:
+            - name: DRA_GRPC_ADDRESS
+              value: "localhost:50051"
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              set -e
+              echo "Installing NRI gRPC plugin ..."
+              mkdir -p /opt/nri/plugins
+              cp /usr/local/bin/nri-plugin-grpc-client /opt/nri/plugins/10-nri-grpc-plugin
+              chmod +x /opt/nri/plugins/10-nri-grpc-plugin
+              ls -l /opt/nri/plugins
+
+      containers:
+        - name: nri-plugin-monitor
+          image: busybox:1.36
+          command: ["/bin/sh","-c"]
+          args:
+            - |
+              echo "NRI monitor on $(hostname)"
+              while true; do
+                test -x /opt/nri/plugins/10-nri-grpc-plugin && echo "$(date) plugin present" || echo "$(date) plugin MISSING"
+                sleep 300
+              done
+          volumeMounts:
+            - name: nri-plugins
+              mountPath: /opt/nri/plugins
+              readOnly: true
+
+      volumes:
+        - name: nri-plugins
+          hostPath:
+            path: /opt/nri/plugins
+            type: DirectoryOrCreate
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+      # mount host root for both init containers
+      initContainers:
+      - name: enable-nri-in-containerd
+        image: alpine:3.20
+        securityContext:
+          privileged: true
+          runAsUser: 0
+        command: ["/bin/sh","-c"]
+        args:
+          - |
+            set -e
+            CONF="/host/etc/containerd/config.toml"
+            CTRD_BIN="/usr/bin/containerd"
+
+            echo "[nri] ensuring host paths"
+            mkdir -p /host/etc/containerd
+            mkdir -p /host/etc/nri/conf.d /host/opt/nri/plugins /host/var/run/nri
+
+            if [ ! -f "$CONF" ]; then
+              echo "[nri] $CONF missing; attempting to generate default"
+              if chroot /host "$CTRD_BIN" config default >/host/tmp/config.toml.new 2>/dev/null; then
+                mv /host/tmp/config.toml.new "$CONF"
+              else
+                echo 'version = 2' > "$CONF"
+              fi
+            fi
+
+            echo "[nri] backing up original"
+            cp -f "$CONF" "${CONF}.bak"
+
+            echo "[nri] rewriting NRI block (remove old, append canonical)"
+            awk '
+              BEGIN{skip=0}
+              {
+                if ($0 ~ /^\[plugins\."io\.containerd\.nri\.v1\.nri"\]/) { skip=1; next }
+                if (skip && $0 ~ /^\[/) { skip=0 }
+                if (!skip) { print $0 }
+              }
+              END{
+                print "[plugins.\"io.containerd.nri.v1.nri\"]"
+                print "  disable = false"
+                print "  disable_connections = false"
+                print "  plugin_config_path = \"/etc/nri/conf.d\""
+                print "  plugin_path = \"/opt/nri/plugins\""
+                print "  plugin_registration_timeout = \"5s\""
+                print "  plugin_request_timeout = \"2s\""
+                print "  socket_path = \"/var/run/nri/nri.sock\""
+              }
+            ' "$CONF" > "${CONF}.new"
+
+            changed=1
+            if diff -q "${CONF}.bak" "${CONF}.new" >/dev/null 2>&1; then
+              changed=0
+            fi
+            mv -f "${CONF}.new" "$CONF"
+
+            if [ $changed -eq 1 ]; then
+              echo "[nri] config changed; restarting containerd"
+              chroot /host systemctl restart containerd || (sleep 2; chroot /host systemctl restart containerd)
+              chroot /host systemctl is-active --quiet containerd && echo "[nri] containerd is active"
+            else
+              echo "[nri] no change; skipping restart"
+            fi
+        volumeMounts:
+          - name: host-root
+            mountPath: /host
+
+      - name: install-nri-grpc-plugin
+        image: acnpublic.azurecr.io/nri-grpc-client:latest
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+          runAsUser: 0
+        env:
+          - name: DRA_GRPC_ADDRESS
+            value: "localhost:50051"
+        command: ["/bin/sh","-c"]
+        args:
+          - |
+            set -e
+            echo "Installing NRI gRPC plugin ..."
+            mkdir -p /opt/nri/plugins
+            cp /usr/local/bin/nri-plugin-grpc-client /opt/nri/plugins/10-nri-grpc-plugin
+            chmod +x /opt/nri/plugins/10-nri-grpc-plugin
+            ls -l /opt/nri/plugins
+        volumeMounts:
+          - name: nri-plugins
+            mountPath: /opt/nri/plugins
+          - name: host-root
+            mountPath: /host
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nri-grpc-plugin
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nri-grpc-plugin
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nri-grpc-plugin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nri-grpc-plugin
+subjects:
+  - kind: ServiceAccount
+    name: nri-grpc-plugin
+    namespace: kube-system

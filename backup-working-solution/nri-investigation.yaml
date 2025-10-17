@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nri-investigation-vm0
+  namespace: default
+spec:
+  nodeName: myvm000000
+  hostNetwork: true
+  hostPID: true
+  restartPolicy: Never
+  containers:
+  - name: investigator
+    image: nicolaka/netshoot
+    command: ["/bin/bash"]
+    args:
+    - -c
+    - |
+      echo "=== NRI Investigation on myvm000000 ==="
+      echo "Date: $(date)"
+      echo
+      
+      echo "1. Containerd version and config:"
+      if [ -f /host/usr/bin/containerd ]; then
+        chroot /host /usr/bin/containerd --version
+      else
+        echo "containerd binary not found in /host/usr/bin/"
+      fi
+      echo
+      
+      echo "2. Containerd configuration:"
+      if [ -f /host/etc/containerd/config.toml ]; then
+        echo "--- config.toml exists ---"
+        cat /host/etc/containerd/config.toml | grep -A 20 -B 5 nri || echo "No NRI config found"
+        echo
+        echo "--- Full config.toml ---"
+        cat /host/etc/containerd/config.toml
+      else
+        echo "/etc/containerd/config.toml not found"
+        echo "Checking for other containerd configs..."
+        find /host/etc -name "*containerd*" -type f 2>/dev/null || echo "No containerd config files found"
+      fi
+      echo
+      
+      echo "3. NRI directories:"
+      echo "Checking /var/run/nri:"
+      ls -la /host/var/run/nri/ 2>/dev/null || echo "/var/run/nri does not exist"
+      echo
+      echo "Checking /opt/nri:"
+      ls -la /host/opt/nri/ 2>/dev/null || echo "/opt/nri does not exist"
+      echo "Checking /opt/nri/plugins:"
+      ls -la /host/opt/nri/plugins/ 2>/dev/null || echo "/opt/nri/plugins does not exist"
+      echo
+      
+      echo "4. Containerd service status:"
+      chroot /host systemctl status containerd --no-pager -l || echo "systemctl not available"
+      echo
+      
+      echo "5. Recent containerd logs (last 50 lines):"
+      chroot /host journalctl -u containerd -n 50 --no-pager || echo "journalctl not available"
+      echo
+      
+      echo "6. NRI-specific logs:"
+      chroot /host journalctl -u containerd -n 200 --no-pager | grep -i nri || echo "No NRI logs found"
+      echo
+      
+      echo "7. Container runtime info:"
+      chroot /host crictl info 2>/dev/null || echo "crictl not available or not working"
+      echo
+      
+      echo "8. Network interfaces (should include eth1):"
+      ip link show | grep eth || echo "No eth interfaces found"
+      echo
+      
+      echo "=== Investigation Complete ==="
+    securityContext:
+      privileged: true
+      runAsUser: 0
+    volumeMounts:
+    - name: host-root
+      mountPath: /host
+  volumes:
+  - name: host-root
+    hostPath:
+      path: /
+  tolerations:
+  - operator: Exists

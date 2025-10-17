@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nri-debug
+spec:
+  nodeName: myvm000000
+  hostNetwork: true
+  securityContext:
+    runAsUser: 0
+  containers:
+  - name: debug
+    image: nicolaka/netshoot
+    securityContext:
+      privileged: true
+    command: ["/bin/sh", "-c"]
+    args:
+    - |
+      echo "=== Checking NRI Configuration ==="
+      echo "1. Containerd config:"
+      if [ -f /host-etc/containerd/config.toml ]; then
+        echo "Found containerd config file:"
+        cat /host-etc/containerd/config.toml | grep -A 10 -B 5 nri || echo "No NRI config found"
+      else
+        echo "No containerd config file found"
+      fi
+      
+      echo ""
+      echo "2. NRI socket directory:"
+      ls -la /host-var-run/nri/ 2>/dev/null || echo "No /var/run/nri directory"
+      
+      echo ""
+      echo "3. Containerd version:"
+      chroot /host-root /usr/bin/containerd --version 2>/dev/null || echo "Cannot check containerd version"
+      
+      echo ""
+      echo "4. Systemd containerd config:"
+      if [ -f /host-etc/systemd/system/containerd.service ]; then
+        cat /host-etc/systemd/system/containerd.service
+      else
+        echo "No systemd containerd service file found"
+      fi
+      
+      echo ""
+      echo "5. Check if NRI is mentioned in any config:"
+      find /host-etc -name "*.toml" -o -name "*.conf" -o -name "*.yaml" | xargs grep -l "nri\|NRI" 2>/dev/null || echo "No NRI mentions found in configs"
+      
+      sleep 600
+    volumeMounts:
+    - name: host-etc
+      mountPath: /host-etc
+      readOnly: true  
+    - name: host-var-run
+      mountPath: /host-var-run
+      readOnly: true
+    - name: host-root
+      mountPath: /host-root
+      readOnly: true
+  volumes:
+  - name: host-etc
+    hostPath:
+      path: /etc
+  - name: host-var-run
+    hostPath:
+      path: /var/run
+  - name: host-root
+    hostPath:
+      path: /
+  restartPolicy: Never

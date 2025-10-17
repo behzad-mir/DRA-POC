@@ -1,0 +1,44 @@
+# Build artifacts
+bin/
+*.log
+*.out
+
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+*.md
+docs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+*_test.go
+testdata/
+
+# Deployment files (if any)
+k8s/
+helm/
+deployments/
+
+# Old files
+old/
+
+# Container images
+*.tar
+*.tar.gz
+
+# Kubernetes manifests that aren't needed in container
+*.yaml
+*.yml
+!Dockerfile

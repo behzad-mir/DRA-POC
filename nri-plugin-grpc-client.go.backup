@@ -1,0 +1,411 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"sync"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
+	pb "nri-nic-hook/draProtos"
+
+	"github.com/containerd/nri/pkg/api"
+	"github.com/containerd/nri/pkg/stub"
+)
+
+type nicPlugin struct {
+	cfg       sync.Map // map[sandboxID]params
+	draClient pb.NodeClient
+	grpcConn  *grpc.ClientConn
+}
+
+type params struct {
+	NICName string
+	IP      string
+	GW      string
+	DNS     string
+}
+
+func (p *nriGrpcPlugin) name() string {
+	return "nri-grpc-nic-hook"
+}
+
+func (p *nriGrpcPlugin) idx() string {
+	return "00"
+}
+
+func (p *nriGrpcPlugin) Configure(ctx context.Context, config, runtime, version string) (stub.EventMask, error) {
+	log.Printf("[%s] Configure called: config=%s, runtime=%s, version=%s", p.name(), config, runtime, version)
+
+	// Connect to DRA driver gRPC service
+	draAddress := "localhost:50051" // Default DRA driver gRPC address
+	if addr := os.Getenv("DRA_GRPC_ADDRESS"); addr != "" {
+		draAddress = addr
+	}
+
+	log.Printf("[%s] Connecting to DRA driver at %s", p.name(), draAddress)
+
+	conn, err := grpc.Dial(draAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Printf("[%s] Failed to connect to DRA driver: %v", p.name(), err)
+		return 0, fmt.Errorf("failed to connect to DRA driver: %v", err)
+	}
+
+	p.grpcConn = conn
+	p.draClient = pb.NewNodeClient(conn)
+
+	log.Printf("[%s] Successfully connected to DRA driver", p.name())
+
+	return api.EventMask(api.Event_CREATE_CONTAINER | api.Event_POST_CREATE_CONTAINER | api.Event_RUN_POD_SANDBOX | api.Event_REMOVE_POD_SANDBOX), nil
+}
+
+func (p *nriGrpcPlugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, containers []*api.Container) ([]*api.ContainerUpdate, error) {
+	log.Printf("[%s] Synchronize called", p.name())
+	return nil, nil
+}
+
+func (p *nriGrpcPlugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
+	log.Printf("[%s] RunPodSandbox called for pod %s/%s", p.name(), pod.GetNamespace(), pod.GetName())
+
+	// Check if this pod should get network configuration
+	if p.shouldConfigureNetwork(pod) {
+		log.Printf("[%s] Pod %s/%s SHOULD get network configuration",
+			p.name(), pod.GetNamespace(), pod.GetName())
+
+		// Debug pod annotations and labels
+		annotations := pod.GetAnnotations()
+		labels := pod.GetLabels()
+		log.Printf("[%s] Pod annotations: %v", p.name(), annotations)
+		log.Printf("[%s] Pod labels: %v", p.name(), labels)
+
+		// Try to extract network namespace information
+		log.Printf("[%s] Pod ID (NRI): %s", p.name(), pod.GetId())
+		log.Printf("[%s] Pod UID: %s", p.name(), pod.GetUid())
+
+		// Check if Linux namespace info is available
+		if linux := pod.GetLinux(); linux != nil {
+			log.Printf("[%s] Pod Linux spec available", p.name())
+			if namespaces := linux.GetNamespaces(); namespaces != nil {
+				log.Printf("[%s] Pod Linux namespaces: %+v", p.name(), namespaces)
+			}
+		}
+
+		// Store pod info for network configuration during PostCreateContainer
+		// Don't configure networking here - wait for PostCreateContainer when namespace exists
+		log.Printf("[%s] Pod marked for network configuration - will configure during PostCreateContainer", p.name())
+
+		// Extract the Kubernetes pod UID from pod metadata for later use
+		kubernetesUID := pod.GetUid()
+		if kubernetesUID == "" {
+			kubernetesUID = p.extractKubernetesPodUID(pod)
+		}
+		log.Printf("[%s] NRI sandbox ID: %s", p.name(), pod.GetId())
+		log.Printf("[%s] Kubernetes pod UID: %s", p.name(), kubernetesUID)
+
+		// Just return success - actual configuration happens in PostCreateContainer
+	} else {
+		log.Printf("[%s] Pod %s/%s does NOT need network configuration", p.name(), pod.GetNamespace(), pod.GetName())
+	}
+
+	return nil
+}
+
+func (p *nriGrpcPlugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, container *api.Container) (*api.ContainerAdjustment, []*api.ContainerUpdate, error) {
+	log.Printf("[%s] CreateContainer called for pod %s/%s, container %s, PID %d",
+		p.name(), pod.GetNamespace(), pod.GetName(), container.GetName(), container.GetPid())
+
+	// Check if this pod should get secondary NIC configuration
+	if !p.shouldConfigureNetwork(pod) {
+		log.Printf("[%s] No network configuration needed for pod %s/%s", p.name(), pod.GetNamespace(), pod.GetName())
+		return nil, nil, nil
+	}
+
+	log.Printf("[%s] Pod %s/%s NEEDS network configuration - proceeding with gRPC call",
+		p.name(), pod.GetNamespace(), pod.GetName())
+
+	// Extract resource claims from pod
+	resourceClaims := p.extractResourceClaims(pod)
+
+	log.Printf("[%s] Making gRPC call to DRA driver for network configuration", p.name())
+
+	// Extract the Kubernetes pod UID from pod metadata
+	kubernetesUID := pod.GetUid()
+	if kubernetesUID == "" {
+		kubernetesUID = p.extractKubernetesPodUID(pod)
+	}
+	log.Printf("[%s] Using Kubernetes pod UID: %s", p.name(), kubernetesUID)
+
+	// Call DRA driver to configure network via gRPC
+	req := &pb.ConfigureNetworkRequest{
+		PodNamespace:   pod.GetNamespace(),
+		PodName:        pod.GetName(),
+		ContainerName:  container.GetName(),
+		ContainerPid:   int32(container.GetPid()),
+		PodUID:         kubernetesUID, // Use Kubernetes pod UID instead of NRI sandbox ID
+		ResourceClaims: resourceClaims,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	log.Printf("[%s] Calling DRA driver ConfigureNetwork for container PID %d", p.name(), container.GetPid())
+	resp, err := p.draClient.ConfigureNetwork(ctx, req)
+	if err != nil {
+		log.Printf("[%s] DRA driver gRPC call failed: %v", p.name(), err)
+		return nil, nil, fmt.Errorf("DRA driver gRPC failed: %v", err)
+	}
+
+	if !resp.GetSuccess() {
+		log.Printf("[%s] DRA driver reported failure: %s", p.name(), resp.GetErrorMessage())
+		return nil, nil, fmt.Errorf("DRA driver network configuration failed: %s", resp.GetErrorMessage())
+	}
+
+	log.Printf("[%s] DRA driver successfully configured network via gRPC", p.name())
+	for _, iface := range resp.GetInterfaces() {
+		log.Printf("[%s] DRA configured interface: %s with IP %s, GW %s",
+			p.name(), iface.GetNicName(), iface.GetIpAddress(), iface.GetGateway())
+	}
+
+	log.Printf("[%s] Network configuration completed successfully via DRA driver", p.name())
+	return nil, nil, nil
+}
+
+func (p *nriGrpcPlugin) PostCreateContainer(ctx context.Context, pod *api.PodSandbox, container *api.Container) error {
+	log.Printf("[%s] PostCreateContainer called for pod %s/%s, container %s, PID %d",
+		p.name(), pod.GetNamespace(), pod.GetName(), container.GetName(), container.GetPid())
+
+	// Check if this pod should get secondary NIC configuration
+	if !p.shouldConfigureNetwork(pod) {
+		log.Printf("[%s] No network configuration needed for pod %s/%s", p.name(), pod.GetNamespace(), pod.GetName())
+		return nil
+	}
+
+	log.Printf("[%s] Pod %s/%s NEEDS network configuration - proceeding with gRPC call (POST-CREATE)",
+		p.name(), pod.GetNamespace(), pod.GetName())
+
+	// Extract resource claims from pod
+	resourceClaims := p.extractResourceClaims(pod)
+
+	log.Printf("[%s] Making gRPC call to DRA driver for network configuration (POST-CREATE)", p.name())
+
+	// Extract the Kubernetes pod UID from pod metadata
+	kubernetesUID := pod.GetUid()
+	if kubernetesUID == "" {
+		kubernetesUID = p.extractKubernetesPodUID(pod)
+	}
+	log.Printf("[%s] Using Kubernetes pod UID: %s (POST-CREATE)", p.name(), kubernetesUID)
+
+	// Extract network namespace path from pod Linux spec
+	networkNamespacePath := ""
+	if pod.GetLinux() != nil {
+		for _, ns := range pod.GetLinux().GetNamespaces() {
+			if ns.GetType() == "network" && ns.GetPath() != "" {
+				networkNamespacePath = ns.GetPath()
+				break
+			}
+		}
+	}
+	log.Printf("[%s] Network namespace path: %s (POST-CREATE)", p.name(), networkNamespacePath)
+
+	// Call DRA driver to configure network via gRPC
+	req := &pb.ConfigureNetworkRequest{
+		PodNamespace:         pod.GetNamespace(),
+		PodName:              pod.GetName(),
+		ContainerName:        container.GetName(),
+		ContainerPid:         int32(container.GetPid()),
+		PodUID:               kubernetesUID, // Use Kubernetes pod UID instead of NRI sandbox ID
+		ResourceClaims:       resourceClaims,
+		NetworkNamespacePath: networkNamespacePath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	log.Printf("[%s] Calling DRA driver ConfigureNetwork for container PID %d (POST-CREATE)", p.name(), container.GetPid())
+	resp, err := p.draClient.ConfigureNetwork(ctx, req)
+	if err != nil {
+		log.Printf("[%s] DRA driver gRPC call failed (POST-CREATE): %v", p.name(), err)
+		return fmt.Errorf("DRA driver gRPC failed: %v", err)
+	}
+
+	if !resp.GetSuccess() {
+		log.Printf("[%s] DRA driver reported failure (POST-CREATE): %s", p.name(), resp.GetErrorMessage())
+		return fmt.Errorf("DRA driver network configuration failed: %s", resp.GetErrorMessage())
+	}
+
+	log.Printf("[%s] DRA driver successfully configured network via gRPC (POST-CREATE)", p.name())
+	for _, iface := range resp.GetInterfaces() {
+		log.Printf("[%s] DRA configured interface: %s with IP %s, GW %s (POST-CREATE)",
+			p.name(), iface.GetNicName(), iface.GetIpAddress(), iface.GetGateway())
+	}
+
+	log.Printf("[%s] Network configuration completed successfully via DRA driver (POST-CREATE)", p.name())
+	return nil
+}
+
+func (p *nriGrpcPlugin) shouldConfigureNetwork(pod *api.PodSandbox) bool {
+	// Check annotations for DRA resource claims
+	annotations := pod.GetAnnotations()
+	for key := range annotations {
+		if key == "resource.k8s.io/claim-name" || key == "network.dra/claim" {
+			log.Printf("[%s] Found DRA resource claim annotation: %s", p.name(), key)
+			return true
+		}
+	}
+
+	// Check labels for test pods
+	labels := pod.GetLabels()
+	if appLabel, exists := labels["app"]; exists {
+		if appLabel == "test-nri-interface" || appLabel == "test-nri-interface-node2" {
+			log.Printf("[%s] Found test pod label: %s", p.name(), appLabel)
+			return true
+		}
+	}
+
+	// Check pod name patterns
+	podName := pod.GetName()
+	if podName == "test-nri-interface" || podName == "test-nri-interface-node2" {
+		log.Printf("[%s] Found test pod name: %s", p.name(), podName)
+		return true
+	}
+
+	return false
+}
+
+func (p *nriGrpcPlugin) extractResourceClaims(pod *api.PodSandbox) []*pb.ResourceClaim {
+	resourceClaims := []*pb.ResourceClaim{}
+
+	// Extract from annotations
+	annotations := pod.GetAnnotations()
+	for key, value := range annotations {
+		if key == "resource.k8s.io/claim-name" || key == "network.dra/claim" {
+			resourceClaims = append(resourceClaims, &pb.ResourceClaim{
+				Name: value,
+				Uid:  pod.GetId(),
+			})
+			log.Printf("[%s] Added resource claim from annotation: %s", p.name(), value)
+		}
+	}
+
+	// For test pods, add synthetic resource claims
+	labels := pod.GetLabels()
+	if appLabel, exists := labels["app"]; exists {
+		if appLabel == "test-nri-interface" || appLabel == "test-nri-interface-node2" {
+			resourceClaims = append(resourceClaims, &pb.ResourceClaim{
+				Name: "secondary-nic",
+				Uid:  pod.GetId(),
+			})
+			log.Printf("[%s] Added synthetic resource claim for test pod", p.name())
+		}
+	}
+
+	podName := pod.GetName()
+	if podName == "test-nri-interface" || podName == "test-nri-interface-node2" {
+		if len(resourceClaims) == 0 { // Only add if not already added
+			resourceClaims = append(resourceClaims, &pb.ResourceClaim{
+				Name: "secondary-nic",
+				Uid:  pod.GetId(),
+			})
+			log.Printf("[%s] Added synthetic resource claim for test pod name", p.name())
+		}
+	}
+
+	return resourceClaims
+}
+
+func (p *nriGrpcPlugin) findContainerPID(podUID string) int {
+	// Try to find container PID by looking up running containers
+	// This is a simple approach - in production you might want to use container runtime APIs
+	log.Printf("[%s] Looking for container PID for pod UID: %s", p.name(), podUID)
+
+	// For now, return 0 to indicate PID not found
+	// The DRA driver will need to handle this case
+	return 0
+}
+
+func (p *nriGrpcPlugin) extractKubernetesPodUID(pod *api.PodSandbox) string {
+	// The actual Kubernetes pod UID needs to be extracted from pod metadata
+	// Let's check all available metadata first
+	annotations := pod.GetAnnotations()
+	labels := pod.GetLabels()
+
+	log.Printf("[%s] Debug - All pod annotations: %+v", p.name(), annotations)
+	log.Printf("[%s] Debug - All pod labels: %+v", p.name(), labels)
+
+	// Check for common Kubernetes UID annotations
+	if uid, exists := annotations["io.kubernetes.pod.uid"]; exists {
+		log.Printf("[%s] Found K8s pod UID in annotations: %s", p.name(), uid)
+		return uid
+	}
+
+	// Check for UID in other common annotation keys
+	uidKeys := []string{
+		"kubernetes.io/pod.uid",
+		"k8s.v1.cni.cncf.io/pod-uid",
+		"pod.uid",
+	}
+
+	for _, key := range uidKeys {
+		if uid, exists := annotations[key]; exists {
+			log.Printf("[%s] Found K8s pod UID in annotation %s: %s", p.name(), key, uid)
+			return uid
+		}
+	}
+
+	// As fallback, return a placeholder that indicates we need the real UID
+	// The DRA driver will need to handle finding the correct namespace
+	log.Printf("[%s] WARNING: Could not find Kubernetes pod UID in metadata", p.name())
+	log.Printf("[%s] NRI sandbox ID: %s", p.name(), pod.GetId())
+
+	// Return the sandbox ID as fallback but log that it might not work
+	return pod.GetId()
+}
+
+func (p *nriGrpcPlugin) RemovePodSandbox(ctx context.Context, pod *api.PodSandbox) error {
+	log.Printf("[%s] RemovePodSandbox called for pod %s/%s", p.name(), pod.GetNamespace(), pod.GetName())
+	return nil
+}
+
+func (p *nriGrpcPlugin) StopPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
+	log.Printf("[%s] StopPodSandbox called for pod %s/%s", p.name(), pod.GetNamespace(), pod.GetName())
+	return nil
+}
+
+func (p *nriGrpcPlugin) Shutdown(ctx context.Context) {
+	log.Printf("[%s] Shutdown called", p.name())
+	if p.grpcConn != nil {
+		p.grpcConn.Close()
+		log.Printf("[%s] Closed gRPC connection to DRA driver", p.name())
+	}
+}
+
+func main() {
+	// Set up file logging
+	logFile, err := os.OpenFile("/tmp/nri-grpc-nic-hook.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("Failed to open log file: %v", err)
+	}
+	defer logFile.Close()
+	log.SetOutput(logFile)
+
+	log.Printf("=== NRI gRPC Plugin Starting ===")
+	log.Printf("Plugin name: %s", "nri-grpc-nic-hook")
+
+	plugin := &nriGrpcPlugin{}
+	log.Printf("Created plugin struct")
+
+	s, err := stub.New(plugin)
+	if err != nil {
+		log.Fatalf("failed to create stub: %v", err)
+	}
+	log.Printf("Created NRI stub successfully")
+
+	log.Printf("Starting plugin registration and run...")
+	if err := s.Run(context.Background()); err != nil {
+		log.Fatalf("stub run failed: %v", err)
+	}
+}
